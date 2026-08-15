@@ -25,7 +25,7 @@ class InactiveAccountManager extends Extension {
         
         $html->add_text(
             '<div style="background:#fff3cd; color:#856404; padding:12px; border-radius:5px; border:1px solid #ffeeba; margin:10px 0;">' .
-            '<strong>Cybersecurity Notice:</strong> Opting into automatic account cleanup is highly recommended in almost all cases. ' .
+            '<strong>Cybersecurity Notice:</strong> Opting into automatic account cleanup is highly recommended in all cases. ' .
             'Leaving abandoned databases unmonitored leaves your site and your users vulnerable to modern data leaks and brute-force takeover.' .
             '</div>'
         );
