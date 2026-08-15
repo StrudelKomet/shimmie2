@@ -90,6 +90,71 @@ function main(): int
             $iee = send_event(new InitExtEvent());
 
             // start the page generation waterfall
+                        // =========================================================================
+            // MANDATORY BOT: Automatically alerts & deletes inactive user data/bloat
+            // =========================================================================
+            if ((PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') && Ctx::$config->get('auto_prune_inactive', true)) {
+                $total_days = (int)Ctx::$config->get('auto_prune_days', 180);
+                $warning_days = max(1, $total_days - 30); // Message user 30 days before deletion
+
+                $warning_cutoff = date('Y-m-d H:i:s', strtotime("-$warning_days days"));
+                $purge_cutoff = date('Y-m-d H:i:s', strtotime("-$total_days days"));
+                $site_url = Ctx::$config->get('base_url', 'http://localhost/');
+                $anonymous_id = 0; 
+
+                // Dynamic table support check for the tracking metrics
+                Ctx::$database->execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS warning_sent_at DATETIME DEFAULT NULL");
+
+                // 1. DISPATCH WARNING NOTICES
+                $to_warn = Ctx::$database->get_all(
+                    "SELECT id, name, email FROM users WHERE joindate < ? AND warning_sent_at IS NULL AND id != 1 AND email IS NOT NULL",
+                    [$warning_cutoff]
+                );
+
+                foreach ($to_warn as $user) {
+                    $subject = "URGENT: Inactive Account Deletion Warning - " . Ctx::$config->get('title', 'Shimmie2');
+                    $message = "Hello {$user['name']},\n\nYour account has been inactive. To protect privacy and prevent database bloat, your account is scheduled for deletion.\n\nIf you do not log in within 30 days, your account profile, username, emails, location indicators, and IP logs will be permanently scrubbed from our systems.\n\nPlease log back in to preserve your account: $site_url";
+                    $headers = "From: no-reply@" . parse_url($site_url, PHP_URL_HOST) . "\r\n" . "X-Mailer: PHP/" . phpversion();
+
+                    if (mail($user['email'], $subject, $message, $headers)) {
+                        Ctx::$database->execute("UPDATE users SET warning_sent_at = NOW() WHERE id = ?", [(int)$user['id']]);
+                    }
+                }
+
+                // 2. SCRUB IP LOGS, NAMES, AND USER DATA BLOAT
+                $to_purge = Ctx::$database->get_all(
+                    "SELECT id FROM users WHERE warning_sent_at < ? AND id != 1",
+                    [$purge_cutoff]
+                );
+
+                foreach ($to_purge as $user) {
+                    $user_id = (int)$user['id'];
+                    Ctx::$database->begin_transaction();
+                    try {
+                        // Anonymize uploads to preserve imageboard grids while deleting network traces
+                        Ctx::$database->execute("UPDATE images SET user_id = ?, ip = '127.0.0.1' WHERE user_id = ?", [$anonymous_id, $user_id]);
+                        
+                        if (Ctx::$database->table_exists("comments")) {
+                            Ctx::$database->execute("UPDATE comments SET user_id = ?, ip = '127.0.0.1' WHERE user_id = ?", [$anonymous_id, $user_id]);
+                        }
+                        if (Ctx::$database->table_exists("image_history")) {
+                            Ctx::$database->execute("DELETE FROM image_history WHERE user_id = ?", [$user_id]);
+                        }
+                        if (Ctx::$database->table_exists("user_login_log")) {
+                            Ctx::$database->execute("DELETE FROM user_login_log WHERE user_id = ?", [$user_id]);
+                        }
+
+                        // Fire standard extension hooks to clean unmanaged caches
+                        send_event(new UserDeleteEvent($user_id));
+
+                        // Permanently remove the main profile record row (wiping name, hash, and email)
+                        Ctx::$database->execute("DELETE FROM users WHERE id = ?", [$user_id]);
+                        Ctx::$database->commit();
+                    } catch (\Throwable $e) {
+                        Ctx::$database->rollback();
+                    }
+                }
+            }
             if (PHP_SAPI === 'cli' || PHP_SAPI === 'phpdbg') {
                 ob_end_flush();
                 ob_implicit_flush(true);
